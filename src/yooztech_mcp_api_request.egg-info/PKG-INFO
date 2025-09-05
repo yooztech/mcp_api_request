@@ -12,7 +12,7 @@ Requires-Dist: httpx>=0.27.0
 Requires-Dist: PyYAML>=6.0.2
 Dynamic: license-file
 
-## mcp_api_request —— 基于 MCP 的通用 API 请求模板
+## yooztech_mcp_api_request —— 基于 MCP 的通用 API 请求工具
 
 该 MCP 服务器用于向真实后端 API 发起请求，帮助前端/AI 获取最真实的接口返回；包含：
 - `init_config(project_root=None, overwrite=false, tokens=None, fmt="yaml")`：在项目根创建配置文件，存储鉴权信息
@@ -24,8 +24,8 @@ Dynamic: license-file
 ```json
 {
   "mcpServers": {
-    "mcp_api_request": {
-      "command": "mcp_api_request",
+    "yooztech_mcp_api_request": {
+      "command": "yooztech_mcp_api_request",
       "args": []
     }
   }
@@ -37,20 +37,20 @@ Dynamic: license-file
 ```json
 {
   "mcpServers": {
-    "mcp_api_request": {
+    "yooztech_mcp_api_request": {
       "command": "uvx",
-      "args": ["mcp_api_request"]
+      "args": ["yooztech_mcp_api_request"]
     }
   }
 }
 ```
 
 ### 脚本与入口
-- 控制台脚本：`mcp_api_request`（见 `pyproject.toml` 的 `[project.scripts]`）
+- 控制台脚本：`yooztech_mcp_api_request`（见 `pyproject.toml` 的 `[project.scripts]`）
 
 ### 开发
 - 依赖安装：`pip install -r requirements.txt`
-- 运行：`mcp_api_request`
+- 运行：`yooztech_mcp_api_request`
 
 ### 配置文件
 - 默认文件名（写入项目根目录）：`.mcp_api_request.yml`（或 `.json` 当 `fmt=json`）
@@ -80,7 +80,7 @@ Dynamic: license-file
 ```
 
 ### 使用流程
-1) 初始化（生成空值模板，不向 AI 索取配置）：
+1) 初始化（生成空值模板）：
 ```json
 {"tool":"init_config","args":{"overwrite":false}}
 ```
