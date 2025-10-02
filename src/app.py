@@ -222,55 +222,58 @@ async def init_config(
 @server.tool()
 async def api_request(
     project_root: str,
-    method: Any = None,
-    url: Any = None,
+    method: str,
+    url: str,
     params: Any = None,
     headers: Any = None,
     body: Any = None,
     timeout_seconds: Any = 30.0,
     **extra_args: Any,
 ) -> Dict[str, Any]:
-    """读取配置并请求指定 API，返回基本信息与完整响应。
-
-    - project_root: 必填项，指定项目根目录的绝对路径
-    - method: HTTP 方法（GET/POST/PUT/DELETE 等）
-    - url: 请求的 URL 地址
-    - params: 查询参数
-    - headers: 请求头
-    - body: 请求体
-    - timeout_seconds: 超时时间（秒），默认 30 秒
+    """发送 HTTP API 请求，自动附加项目配置的鉴权信息。
     
-    功能说明：
-    - 从 `.mcp_api_request.yml/.yaml/.json` 读取鉴权配置
-    - 自动将 type=header 的 token 加入请求头，将 type=param 的 token 加入查询参数
-    - 用户传入的 headers/params 将覆盖同名的鉴权项
-    - body 为 dict/list 时作为 JSON 发送；其余类型将作为原始内容发送
+    这个工具用于向任何 HTTP API 发送请求，会自动从项目配置文件中读取并添加鉴权信息（如 API Token、Authorization 头等）。
+    
+    必填参数：
+    - project_root: 项目根目录的绝对路径，例如 "/home/user/my_project"
+    - method: HTTP 请求方法，例如 "GET"、"POST"、"PUT"、"DELETE"
+    - url: 完整的请求 URL，例如 "https://api.example.com/users"
+    
+    可选参数：
+    - params: URL 查询参数，dict 格式，例如 {"page": 1, "limit": 10}
+    - headers: 额外的请求头，dict 格式，例如 {"Content-Type": "application/json"}
+    - body: 请求体，dict/list 会自动转为 JSON，字符串直接发送
+    - timeout_seconds: 请求超时时间（秒），默认 30
+    
+    使用示例：
+    1. GET 请求：
+       api_request(project_root="/home/user/project", method="GET", url="https://api.example.com/users")
+    
+    2. POST 请求带 JSON 数据：
+       api_request(project_root="/home/user/project", method="POST", url="https://api.example.com/users", 
+                   body={"name": "张三", "age": 25})
+    
+    3. 带查询参数的 GET 请求：
+       api_request(project_root="/home/user/project", method="GET", url="https://api.example.com/users",
+                   params={"page": 1, "limit": 10})
+    
+    返回值包含完整的请求和响应信息，包括状态码、响应头、响应体等。
     """
-    # 验证 project_root 必填
+    # 验证必填参数
     if not project_root or not isinstance(project_root, str) or not project_root.strip():
         raise ValueError("project_root 是必填项，必须提供项目根目录的绝对路径")
     
-    # 兼容别名与上游 AI 可能传入的额外键
-    if (method is None or str(method).strip() == "") and "method" in extra_args:
-        method = extra_args.get("method")
-    if (url is None or str(url).strip() == "") and "url" in extra_args:
-        url = extra_args.get("url")
-    if timeout_seconds is None or (isinstance(timeout_seconds, str) and timeout_seconds.strip() == ""):
+    if not method or not isinstance(method, str) or not method.strip():
+        raise ValueError("method 是必填项，必须提供 HTTP 方法（如 GET、POST、PUT、DELETE）")
+    
+    if not url or not isinstance(url, str) or not url.strip():
+        raise ValueError("url 是必填项，必须提供完整的请求 URL")
+    
+    # 处理超时参数
+    try:
+        timeout_seconds = float(timeout_seconds)
+    except Exception:
         timeout_seconds = 30.0
-    # 处理别名超时键
-    if isinstance(timeout_seconds, (int, float)):
-        pass
-    else:
-        alias_to = (
-            extra_args.get("timeout_seconds")
-            or extra_args.get("timeout seconds")
-            or extra_args.get("timeoutSeconds")
-            or timeout_seconds
-        )
-        try:
-            timeout_seconds = float(alias_to)
-        except Exception:
-            timeout_seconds = 30.0
 
     cfg_path, root = _smart_find_config(project_root)
     
@@ -332,9 +335,7 @@ async def api_request(
         else:
             send_content = str(body)
 
-    method_upper = str(method or "").strip().upper()
-    if not method_upper:
-        raise ValueError("method 不能为空，例如 GET/POST/PUT/DELETE")
+    method_upper = method.strip().upper()
 
     # 更安全的超时构造：连接/读取/写入/总时长
     try:
