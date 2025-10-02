@@ -42,11 +42,72 @@ def _choose_write_path(root: Path, fmt: str) -> Path:
 
 
 def _find_existing_config(root: Path) -> Optional[Path]:
+    """在指定目录查找配置文件"""
     for name in CONFIG_CANDIDATES:
         p = root / name
         if p.is_file():
             return p
     return None
+
+
+def _find_config_recursive(start_path: Path, max_depth: int = 5) -> Optional[Path]:
+    """递归向上查找配置文件，最多向上查找 max_depth 层"""
+    current = start_path.resolve()
+    for _ in range(max_depth):
+        config = _find_existing_config(current)
+        if config:
+            return config
+        parent = current.parent
+        if parent == current:
+            # 已到达根目录
+            break
+        current = parent
+    return None
+
+
+def _smart_find_config(project_root: Optional[str] = None) -> Tuple[Optional[Path], List[str]]:
+    """智能查找配置文件，返回 (配置文件路径, 搜索过的目录列表)"""
+    searched_dirs: List[str] = []
+    
+    # 1. 如果指定了 project_root，优先在该目录查找
+    if project_root and isinstance(project_root, str) and project_root.strip():
+        root = Path(project_root).expanduser().resolve()
+        searched_dirs.append(str(root))
+        config = _find_existing_config(root)
+        if config:
+            return config, searched_dirs
+    
+    # 2. 尝试从环境变量获取项目根目录
+    env_root = os.environ.get("MCP_API_REQUEST_PROJECT_ROOT")
+    if env_root:
+        root = Path(env_root).expanduser().resolve()
+        if root not in [Path(d) for d in searched_dirs]:
+            searched_dirs.append(str(root))
+            config = _find_existing_config(root)
+            if config:
+                return config, searched_dirs
+    
+    # 3. 从当前工作目录开始递归向上查找（限制在项目目录内）
+    cwd = Path(os.getcwd()).resolve()
+    if str(cwd) not in searched_dirs:
+        searched_dirs.append(str(cwd))
+    config = _find_config_recursive(cwd)
+    if config:
+        # 记录所有向上搜索过的目录
+        parent = cwd.parent
+        current = cwd
+        for _ in range(5):
+            if parent == current:
+                break
+            if str(parent) not in searched_dirs:
+                searched_dirs.append(str(parent))
+            if config.parent == parent:
+                break
+            current = parent
+            parent = parent.parent
+        return config, searched_dirs
+    
+    return None, searched_dirs
 
 
 def _load_tokens_from_config(path: Path) -> List[Dict[str, str]]:
@@ -170,12 +231,21 @@ async def init_config(
       - type: header|param
       - key: 鉴权字段名
       - value: 鉴权值
+    
+    注意：如果不指定 project_root，配置文件将创建在当前工作目录。
+    也可以设置环境变量 MCP_API_REQUEST_PROJECT_ROOT 作为默认项目根目录。
     """
     root = _resolve_project_root(project_root)
     path = _choose_write_path(root, fmt)
 
     if path.exists() and not overwrite:
-        raise ValueError(f"配置文件已存在：{str(path)}，如需覆盖请设置 overwrite=true")
+        # 检查是否能通过智能查找找到这个文件
+        found_path, _ = _smart_find_config(project_root)
+        raise ValueError(
+            f"配置文件已存在：{str(path)}\n"
+            f"如需覆盖请设置 overwrite=true\n"
+            f"提示：该配置文件可被自动发现并使用。"
+        )
 
     # 始终写入包含空值的模板，指导用户手动编辑
     data: List[Dict[str, str]] = [
@@ -189,15 +259,74 @@ async def init_config(
         content = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
 
     path.write_text(content, encoding="utf-8")
-    return {
+    
+    # 验证能否通过智能查找找到刚创建的文件
+    found_path, searched_dirs = _smart_find_config(project_root)
+    auto_discoverable = found_path == path
+    
+    result = {
         "path": str(path),
         "created": True,
         "count": len(data),
+        "auto_discoverable": auto_discoverable,
         "next_steps": [
             "打开上述文件，填入实际 token 值（空值项不会被发送）",
             "可保留或删除你不需要的项；可添加更多 {type,key,value} 条目",
         ],
     }
+    
+    if auto_discoverable:
+        result["note"] = "✓ 配置文件位置正确，工具可以自动发现并使用"
+    else:
+        result["warning"] = (
+            f"⚠ 配置文件创建在 {str(path)}，但可能无法被自动发现。\n"
+            f"建议：设置环境变量 MCP_API_REQUEST_PROJECT_ROOT={str(root)} 或在调用时明确指定 project_root"
+        )
+    
+    return result
+
+
+@server.tool()
+async def locate_config(project_root: Optional[str] = None) -> Dict[str, Any]:
+    """定位配置文件的位置，用于调试和验证配置文件能否被找到。
+    
+    返回当前能找到的配置文件路径，以及搜索过的所有目录。
+    """
+    cfg_path, searched_dirs = _smart_find_config(project_root)
+    
+    result: Dict[str, Any] = {
+        "config_found": cfg_path is not None,
+        "searched_directories": searched_dirs,
+    }
+    
+    if cfg_path:
+        result["config_path"] = str(cfg_path)
+        result["config_directory"] = str(cfg_path.parent)
+        result["config_filename"] = cfg_path.name
+        # 尝试读取配置内容统计
+        try:
+            tokens = _load_tokens_from_config(cfg_path)
+            result["tokens_count"] = len(tokens)
+            result["token_types"] = {
+                "header": sum(1 for t in tokens if t.get("type") == "header"),
+                "param": sum(1 for t in tokens if t.get("type") == "param"),
+            }
+        except Exception as e:
+            result["config_error"] = str(e)
+    else:
+        result["message"] = (
+            "未找到配置文件。请运行 init_config 创建配置文件，\n"
+            "或设置环境变量 MCP_API_REQUEST_PROJECT_ROOT 指定项目根目录。"
+        )
+    
+    # 提供环境变量信息
+    env_root = os.environ.get("MCP_API_REQUEST_PROJECT_ROOT")
+    if env_root:
+        result["env_project_root"] = env_root
+    
+    result["current_working_directory"] = str(Path(os.getcwd()).resolve())
+    
+    return result
 
 
 @server.tool()
@@ -247,11 +376,13 @@ async def api_request(
         except Exception:
             timeout_seconds = 30.0
 
-    root = _resolve_project_root(project_root)
-    cfg_path = _find_existing_config(root)
+    cfg_path, searched_dirs = _smart_find_config(project_root)
     if not cfg_path:
+        searched_info = "\n  - ".join(searched_dirs)
         raise ValueError(
-            "未找到配置文件，请先运行 init_config 在项目根目录创建 .mcp_api_request.yml/.json"
+            f"未找到配置文件，已搜索以下目录：\n  - {searched_info}\n\n"
+            "请在以上任一目录创建配置文件，或运行 init_config 工具初始化配置。\n"
+            "提示：可设置环境变量 MCP_API_REQUEST_PROJECT_ROOT 指定默认项目根目录。"
         )
 
     tokens = _load_tokens_from_config(cfg_path)
