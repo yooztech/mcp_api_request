@@ -28,12 +28,6 @@ def _resolve_project_root(project_root: Optional[str]) -> Path:
     return Path(os.getcwd()).resolve()
 
 
-def _default_config_tokens() -> List[Dict[str, str]]:
-    return [
-        {"type": "header", "key": "auth", "value": "xxxxxx"},
-    ]
-
-
 def _choose_write_path(root: Path, fmt: str) -> Path:
     fmt_lower = (fmt or "yaml").strip().lower()
     if fmt_lower == "json":
@@ -50,64 +44,18 @@ def _find_existing_config(root: Path) -> Optional[Path]:
     return None
 
 
-def _find_config_recursive(start_path: Path, max_depth: int = 5) -> Optional[Path]:
-    """递归向上查找配置文件，最多向上查找 max_depth 层"""
-    current = start_path.resolve()
-    for _ in range(max_depth):
-        config = _find_existing_config(current)
-        if config:
-            return config
-        parent = current.parent
-        if parent == current:
-            # 已到达根目录
-            break
-        current = parent
-    return None
-
-
-def _smart_find_config(project_root: Optional[str] = None) -> Tuple[Optional[Path], List[str]]:
-    """智能查找配置文件，返回 (配置文件路径, 搜索过的目录列表)"""
-    searched_dirs: List[str] = []
+def _smart_find_config(project_root: str) -> Tuple[Optional[Path], Path]:
+    """查找配置文件，使用和 init_config 完全相同的目录解析逻辑
     
-    # 1. 如果指定了 project_root，优先在该目录查找
-    if project_root and isinstance(project_root, str) and project_root.strip():
-        root = Path(project_root).expanduser().resolve()
-        searched_dirs.append(str(root))
-        config = _find_existing_config(root)
-        if config:
-            return config, searched_dirs
+    返回 (配置文件路径, 项目根目录路径)
+    """
+    # 使用和 init_config 完全相同的目录解析方法
+    root = _resolve_project_root(project_root)
     
-    # 2. 尝试从环境变量获取项目根目录
-    env_root = os.environ.get("MCP_API_REQUEST_PROJECT_ROOT")
-    if env_root:
-        root = Path(env_root).expanduser().resolve()
-        if root not in [Path(d) for d in searched_dirs]:
-            searched_dirs.append(str(root))
-            config = _find_existing_config(root)
-            if config:
-                return config, searched_dirs
+    # 在项目根目录查找配置文件
+    config = _find_existing_config(root)
     
-    # 3. 从当前工作目录开始递归向上查找（限制在项目目录内）
-    cwd = Path(os.getcwd()).resolve()
-    if str(cwd) not in searched_dirs:
-        searched_dirs.append(str(cwd))
-    config = _find_config_recursive(cwd)
-    if config:
-        # 记录所有向上搜索过的目录
-        parent = cwd.parent
-        current = cwd
-        for _ in range(5):
-            if parent == current:
-                break
-            if str(parent) not in searched_dirs:
-                searched_dirs.append(str(parent))
-            if config.parent == parent:
-                break
-            current = parent
-            parent = parent.parent
-        return config, searched_dirs
-    
-    return None, searched_dirs
+    return config, root
 
 
 def _load_tokens_from_config(path: Path) -> List[Dict[str, str]]:
@@ -219,32 +167,31 @@ def _normalize_params(base_params: Dict[str, Any], user_params: Any) -> Dict[str
 
 @server.tool()
 async def init_config(
-    project_root: Optional[str] = None,
-    overwrite: bool = False,
-    tokens: Optional[List[Dict[str, str]]] = None,
+    project_root: str,
     fmt: str = "yaml",
 ) -> Dict[str, Any]:
     """初始化配置文件，写入到项目根目录。
 
+    - project_root: 必填项，指定项目根目录的绝对路径
+    - fmt: 配置文件格式，yaml 或 json，默认为 yaml
     - 文件名：`.mcp_api_request.yml`（或 `.json`，当 fmt=json 时）
     - 内容：列表形式，每项包含 {type, key, value}
       - type: header|param
       - key: 鉴权字段名
       - value: 鉴权值
     
-    注意：如果不指定 project_root，配置文件将创建在当前工作目录。
-    也可以设置环境变量 MCP_API_REQUEST_PROJECT_ROOT 作为默认项目根目录。
+    配置文件已存在时会拒绝创建，避免覆盖现有配置。
     """
+    if not project_root or not isinstance(project_root, str) or not project_root.strip():
+        raise ValueError("project_root 是必填项，必须提供项目根目录的绝对路径")
+    
     root = _resolve_project_root(project_root)
     path = _choose_write_path(root, fmt)
 
-    if path.exists() and not overwrite:
-        # 检查是否能通过智能查找找到这个文件
-        found_path, _ = _smart_find_config(project_root)
+    if path.exists():
         raise ValueError(
             f"配置文件已存在：{str(path)}\n"
-            f"如需覆盖请设置 overwrite=true\n"
-            f"提示：该配置文件可被自动发现并使用。"
+            f"不能覆盖已有配置文件，请手动编辑或删除后重新创建"
         )
 
     # 始终写入包含空值的模板，指导用户手动编辑
@@ -260,105 +207,54 @@ async def init_config(
 
     path.write_text(content, encoding="utf-8")
     
-    # 验证能否通过智能查找找到刚创建的文件
-    found_path, searched_dirs = _smart_find_config(project_root)
-    auto_discoverable = found_path == path
-    
-    result = {
+    return {
         "path": str(path),
+        "project_root": str(root),
         "created": True,
         "count": len(data),
-        "auto_discoverable": auto_discoverable,
         "next_steps": [
             "打开上述文件，填入实际 token 值（空值项不会被发送）",
             "可保留或删除你不需要的项；可添加更多 {type,key,value} 条目",
         ],
     }
-    
-    if auto_discoverable:
-        result["note"] = "✓ 配置文件位置正确，工具可以自动发现并使用"
-    else:
-        result["warning"] = (
-            f"⚠ 配置文件创建在 {str(path)}，但可能无法被自动发现。\n"
-            f"建议：设置环境变量 MCP_API_REQUEST_PROJECT_ROOT={str(root)} 或在调用时明确指定 project_root"
-        )
-    
-    return result
-
-
-@server.tool()
-async def locate_config(project_root: Optional[str] = None) -> Dict[str, Any]:
-    """定位配置文件的位置，用于调试和验证配置文件能否被找到。
-    
-    返回当前能找到的配置文件路径，以及搜索过的所有目录。
-    """
-    cfg_path, searched_dirs = _smart_find_config(project_root)
-    
-    result: Dict[str, Any] = {
-        "config_found": cfg_path is not None,
-        "searched_directories": searched_dirs,
-    }
-    
-    if cfg_path:
-        result["config_path"] = str(cfg_path)
-        result["config_directory"] = str(cfg_path.parent)
-        result["config_filename"] = cfg_path.name
-        # 尝试读取配置内容统计
-        try:
-            tokens = _load_tokens_from_config(cfg_path)
-            result["tokens_count"] = len(tokens)
-            result["token_types"] = {
-                "header": sum(1 for t in tokens if t.get("type") == "header"),
-                "param": sum(1 for t in tokens if t.get("type") == "param"),
-            }
-        except Exception as e:
-            result["config_error"] = str(e)
-    else:
-        result["message"] = (
-            "未找到配置文件。请运行 init_config 创建配置文件，\n"
-            "或设置环境变量 MCP_API_REQUEST_PROJECT_ROOT 指定项目根目录。"
-        )
-    
-    # 提供环境变量信息
-    env_root = os.environ.get("MCP_API_REQUEST_PROJECT_ROOT")
-    if env_root:
-        result["env_project_root"] = env_root
-    
-    result["current_working_directory"] = str(Path(os.getcwd()).resolve())
-    
-    return result
 
 
 @server.tool()
 async def api_request(
+    project_root: str,
     method: Any = None,
     url: Any = None,
     params: Any = None,
     headers: Any = None,
     body: Any = None,
-    project_root: Optional[str] = None,
     timeout_seconds: Any = 30.0,
     **extra_args: Any,
 ) -> Dict[str, Any]:
     """读取配置并请求指定 API，返回基本信息与完整响应。
 
+    - project_root: 必填项，指定项目根目录的绝对路径
+    - method: HTTP 方法（GET/POST/PUT/DELETE 等）
+    - url: 请求的 URL 地址
+    - params: 查询参数
+    - headers: 请求头
+    - body: 请求体
+    - timeout_seconds: 超时时间（秒），默认 30 秒
+    
+    功能说明：
     - 从 `.mcp_api_request.yml/.yaml/.json` 读取鉴权配置
     - 自动将 type=header 的 token 加入请求头，将 type=param 的 token 加入查询参数
     - 用户传入的 headers/params 将覆盖同名的鉴权项
     - body 为 dict/list 时作为 JSON 发送；其余类型将作为原始内容发送
     """
+    # 验证 project_root 必填
+    if not project_root or not isinstance(project_root, str) or not project_root.strip():
+        raise ValueError("project_root 是必填项，必须提供项目根目录的绝对路径")
+    
     # 兼容别名与上游 AI 可能传入的额外键
     if (method is None or str(method).strip() == "") and "method" in extra_args:
         method = extra_args.get("method")
     if (url is None or str(url).strip() == "") and "url" in extra_args:
         url = extra_args.get("url")
-    if project_root is None:
-        project_root = (
-            extra_args.get("project_root")
-            or extra_args.get("project root")
-            or extra_args.get("projectRoot")
-            or project_root
-        )
     if timeout_seconds is None or (isinstance(timeout_seconds, str) and timeout_seconds.strip() == ""):
         timeout_seconds = 30.0
     # 处理别名超时键
@@ -376,13 +272,14 @@ async def api_request(
         except Exception:
             timeout_seconds = 30.0
 
-    cfg_path, searched_dirs = _smart_find_config(project_root)
+    cfg_path, root = _smart_find_config(project_root)
+    
     if not cfg_path:
-        searched_info = "\n  - ".join(searched_dirs)
         raise ValueError(
-            f"未找到配置文件，已搜索以下目录：\n  - {searched_info}\n\n"
-            "请在以上任一目录创建配置文件，或运行 init_config 工具初始化配置。\n"
-            "提示：可设置环境变量 MCP_API_REQUEST_PROJECT_ROOT 指定默认项目根目录。"
+            f"未找到配置文件，已在目录 {str(root)} 中查找。\n\n"
+            "请先运行 init_config 工具初始化配置，或手动创建配置文件。\n"
+            "配置文件名称: .mcp_api_request.yml 或 .mcp_api_request.json\n"
+            f"提示: 配置文件应位于 {str(root)} 目录下"
         )
 
     tokens = _load_tokens_from_config(cfg_path)

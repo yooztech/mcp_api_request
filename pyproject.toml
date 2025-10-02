@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "yooztech_mcp_api_request"
-version = "0.0.2"
+version = "0.0.4"
 description = "MCP server template for generic API requests"
 readme = "README.md"
 requires-python = ">=3.10"
