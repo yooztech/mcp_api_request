@@ -9,10 +9,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import httpx
 import yaml
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 
-server = FastMCP("yooztech_mcp_api_request")
+server = MCPServer("yooztech_mcp_api_request")
 
 
 CONFIG_CANDIDATES: List[str] = [
